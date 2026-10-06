@@ -3748,14 +3748,9 @@ static inline void set_audio_thread_sched_prop(struct task_struct *p)
 
 	rcu_read_lock();
 	css = task_css(p, cpuset_cgrp_id);
-	if (!css) {
-		rcu_read_unlock();
-		return;
-	}
-	rcu_read_unlock();
-
-	if (!strcmp(css->cgroup->kn->name, "audio-app"))
+	if (css && !strcmp(css->cgroup->kn->name, "audio-app"))
 		hmbird_set_sched_prop(p, SCHED_PROP_DEADLINE_LEVEL1);
+	rcu_read_unlock();
 }
 
 static int hmbird_ops_enable(void *unused)
