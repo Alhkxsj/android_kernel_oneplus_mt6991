@@ -633,13 +633,14 @@ static void init_isolate_cpus(void)
 	WARN_ON(!alloc_cpumask_var(&iso_masks.exclusive, GFP_KERNEL));
 	WARN_ON(!alloc_cpumask_var(&iso_masks.big, GFP_KERNEL));
 	WARN_ON(!alloc_cpumask_var(&iso_masks.little, GFP_KERNEL));
+	/* MT6991: cpu0-3 A520, cpu4-6 A725, cpu7 X925 */
 	cpumask_set_cpu(0, iso_masks.little);
 	cpumask_set_cpu(1, iso_masks.little);
 	cpumask_set_cpu(2, iso_masks.little);
 	cpumask_set_cpu(3, iso_masks.little);
 	cpumask_set_cpu(4, iso_masks.big);
 	cpumask_set_cpu(5, iso_masks.big);
-	cpumask_set_cpu(6, iso_masks.partial);
+	cpumask_set_cpu(6, iso_masks.big);
 	cpumask_set_cpu(7, iso_masks.exclusive);
 }
 
