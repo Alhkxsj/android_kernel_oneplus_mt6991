@@ -1611,7 +1611,8 @@ static void init_child_tg(struct cgroup *cgrp, struct task_group *tg)
 	l1cgrp = cgroup_ancestor_l1(cgrp);
 	if (l1cgrp)
 		update_cgroup_ids_table(cgrp->kn->id, cgrp_name_to_idx(l1cgrp));
-	cgroup_put(l1cgrp);
+	if (l1cgrp)
+		cgroup_put(l1cgrp);
 }
 
 static void cgrp_dsq_idx_init(struct cgroup *cgrp, struct task_group *tg)
@@ -1780,7 +1781,7 @@ static bool hmbird_ops_tryset_enable_state(enum hmbird_ops_enable_state to,
 
 static bool hmbird_ops_disabling(void)
 {
-	return false;
+	return hmbird_ops_enable_state() == HMBIRD_OPS_DISABLING;
 }
 
 /**
@@ -3224,13 +3225,10 @@ void hmbird_post_fork(struct task_struct *p)
 
 void hmbird_cancel_fork(struct task_struct *p)
 {
-	struct hmbird_entity *see = get_hmbird_ts(p);
-
 	if (hmbird_enabled())
 		hmbird_ops_disable_task(p);
 
 	kfree(get_hmbird_ts(p));
-	see = NULL;
 
 	percpu_up_read(&hmbird_fork_rwsem);
 }
@@ -3238,7 +3236,6 @@ void hmbird_cancel_fork(struct task_struct *p)
 void hmbird_free(struct task_struct *p)
 {
 	unsigned long flags;
-	struct hmbird_entity *see = get_hmbird_ts(p);
 
 	spin_lock_irqsave(&hmbird_tasks_lock, flags);
 	list_del_init(&get_hmbird_ts(p)->tasks_node);
@@ -3258,7 +3255,6 @@ void hmbird_free(struct task_struct *p)
 		task_rq_unlock(rq, p, &rf);
 	}
 	kfree(get_hmbird_ts(p));
-	see = NULL;
 }
 
 static void prio_changed_hmbird(struct rq *rq, struct task_struct *p, int oldprio)
@@ -3482,7 +3478,7 @@ static void __setscheduler_prio(struct task_struct *p, int prio)
  * Heartbeat, avoid humbird keep running while APP already exit.
  * Check whether APP send alive-signal periodly.
  */
-#define HEARTBEAT_TIMEOUT		(msecs_to_jiffies(2500))
+#define HEARTBEAT_TIMEOUT		(msecs_to_jiffies(10000))
 #define HEARTBEAT_CHECK_INTERVAL	(msecs_to_jiffies(1000))
 static struct timer_list hb_timer;
 static unsigned long next_hb;
