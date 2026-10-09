@@ -226,6 +226,9 @@ struct eventpoll {
 	 */
 	refcount_t refcount;
 
+	/* used to defer freeing past reverse_path_check_proc() RCU walk */
+	struct rcu_head rcu;
+
 #ifdef CONFIG_NET_RX_BUSY_POLL
 	/* used to track busy poll napi_id */
 	unsigned int napi_id;
@@ -704,12 +707,15 @@ static bool ep_refcount_dec_and_test(struct eventpoll *ep)
 	return true;
 }
 
+static struct file *epi_fget(const struct epitem *epi);
+
 static void ep_free(struct eventpoll *ep)
 {
 	mutex_destroy(&ep->mtx);
 	free_uid(ep->user);
 	wakeup_source_unregister(ep->ws);
-	kfree(ep);
+	/* reverse_path_check_proc() may still hold epi->ep under RCU */
+	kfree_rcu(ep, rcu);
 }
 
 /*
@@ -719,10 +725,15 @@ static void ep_free(struct eventpoll *ep)
  * This prevents ep_clear_and_put() from dropping all the ep references
  * while running concurrently with eventpoll_release_file().
  * Returns true if the eventpoll can be disposed.
+ *
+ * Pin @file with epi_fget() before the f_lock section, so that __fput()
+ * cannot free it (nor the watched eventpoll backing epi->fllink.pprev)
+ * while hlist_del_rcu() runs. A failed pin means __fput() is already in
+ * flight and the removal is left to eventpoll_release_file().
  */
 static bool __ep_remove(struct eventpoll *ep, struct epitem *epi, bool force)
 {
-	struct file *file = epi->ffd.file;
+	struct file *file;
 	struct epitems_head *to_free;
 	struct hlist_head *head;
 
@@ -733,12 +744,29 @@ static bool __ep_remove(struct eventpoll *ep, struct epitem *epi, bool force)
 	 */
 	ep_unregister_pollwait(ep, epi);
 
+	/* cheap sync with eventpoll_release_file() */
+	if (unlikely(READ_ONCE(epi->dying) && !force))
+		return false;
+
+	/*
+	 * Take a reference so that a concurrent __fput() cannot free @file
+	 * while we unlink from f_ep below. If the reference cannot be taken,
+	 * __fput() is already running: leave the removal to
+	 * eventpoll_release_file(), which will block on ep->mtx.
+	 *
+	 * force=true comes from eventpoll_release_file() itself; @file is held
+	 * by that __fput(), so no reference is taken (nor dropped).
+	 */
+	if (force) {
+		file = epi->ffd.file;
+	} else {
+		file = epi_fget(epi);
+		if (!file)
+			return false;
+	}
+
 	/* Remove the current item from the list of epoll hooks */
 	spin_lock(&file->f_lock);
-	if (epi->dying && !force) {
-		spin_unlock(&file->f_lock);
-		return false;
-	}
 
 	to_free = NULL;
 	head = file->f_ep;
@@ -754,6 +782,8 @@ static bool __ep_remove(struct eventpoll *ep, struct epitem *epi, bool force)
 	}
 	hlist_del_rcu(&epi->fllink);
 	spin_unlock(&file->f_lock);
+	if (!force)
+		fput(file);
 	free_ephead(to_free);
 
 	rb_erase_cached(&epi->rbn, &ep->rbr);
@@ -991,7 +1021,7 @@ again:
 	spin_lock(&file->f_lock);
 	if (file->f_ep && file->f_ep->first) {
 		epi = hlist_entry(file->f_ep->first, struct epitem, fllink);
-		epi->dying = true;
+		WRITE_ONCE(epi->dying, true);
 		spin_unlock(&file->f_lock);
 
 		/*
